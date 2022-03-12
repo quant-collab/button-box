@@ -87,7 +87,9 @@ void main(void) {
     // RB0 (red/IPB), RB1 (green button), RB2 (blue button), RB4 (key switch)
     TRISB |= 0x01 | 0x02 | 0x04 | 0x10;
     LATB |= 0x01 | 0x02 | 0x04 | 0x10;
-    INTCON2 &= 0x80; // Set /RBPU to zero so that we can enable pull-ups on PORTB
+    //INTCON2 &= 0x80; // Set /RBPU to zero so that we can enable pull-ups on PORTB
+    INTCON2bits.RBPU = 0;
+    ADCON1 |= 0x0F; // Disable ADC function on PORTB pins (use for digital input)
     // RC2 (yellow LED on board), RC3 (red LED on board)
     TRISC &= ~(0x02 | 0x04);
     // RD0: shift register data feed
@@ -110,6 +112,7 @@ void main(void) {
     unsigned char state = 0x00;
     while (1) {
         state ^= 0xFF;
+        // Flash internal yellow/red LEDs
         if (state) {
             PORTC |= 0x02;
             PORTC &= ~0x04;
@@ -130,14 +133,20 @@ void main(void) {
         //PORTB = 0x00;
         //PORTE &= ~0x01;
         //delay();
+        count = PORTB; // DEBUG: show input pins on LEDs
         sr_output_enable(0);
         sr_write(count);
         sr_output_enable(1);
 
+        // Count up when key is turned
+        //if (PORTB & 0x10 == 0) {
+        //}
+        /*
         count++;
         if (count > 0x1FFFF) {
-            count = 0;
+          count = 0;
         }
+        */
     }
 }
 
