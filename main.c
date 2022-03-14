@@ -4,13 +4,14 @@
  * Created on August 16, 2010, 12:09 PM
  */
 
+#include <stdint.h>
 #include "p18cxxx.h"
 
 void delay();
 
 void delay() {
     unsigned long counter = 0;
-    for (counter = 0; counter < 100*1000UL; counter++) {
+    for (counter = 0; counter < 120*1000UL; counter++) {
         NOP();
     }
 }
@@ -76,31 +77,61 @@ void sr_write(unsigned long bits) {
     sr_latch_clock();
 }
 
-#pragma config OSC = HSPLL
-//#pragma config OSC = HS
-//#pragma config OSC = XT
-#pragma config WDT = OFF
-void main(void) {
-    int count = 0;
-    // Tri-state / data direction registers: 0 = output, 1 = input (default)
+#define RED_BUTTON_BIT 0x01 // RB0 (red IPB)
+#define GREEN_BUTTON_BIT 0x02 // RB1 (green button)
+#define BLUE_BUTTON_BIT 0x04 // RB2 (blue button)
+#define KEY_SWITCH_BIT 0x10 // RB4 (key switch)
+#define PORTB_INPUT_PINS (RED_BUTTON_BIT | GREEN_BUTTON_BIT | BLUE_BUTTON_BIT | KEY_SWITCH_BIT)
+
+#define RED_PRESSED ((PORTB & RED_BUTTON_BIT) == 0)
+#define GREEN_PRESSED ((PORTB & GREEN_BUTTON_BIT) == 0)
+#define BLUE_PRESSED ((PORTB & BLUE_BUTTON_BIT) == 0)
+#define KEY_ON ((PORTB & KEY_SWITCH_BIT) == 0)
+
+void init_gpio(void) {
+    // TRISx = Tri-state / data direction for port x pins: 0 = output, 1 = input (default)
+    
+    // Port A
+    // RA0-RA4: (not connected)
     //TRISA = 0;
-    // RB0 (red/IPB), RB1 (green button), RB2 (blue button), RB4 (key switch)
-    TRISB |= 0x01 | 0x02 | 0x04 | 0x10;
-    LATB |= 0x01 | 0x02 | 0x04 | 0x10;
-    //INTCON2 &= 0x80; // Set /RBPU to zero so that we can enable pull-ups on PORTB
-    INTCON2bits.RBPU = 0;
+
+    // Port B
+    // 4 digital inputs: red, green, and blue pushbuttons plus key switch
+    TRISB |= PORTB_INPUT_PINS;
+    LATB |= PORTB_INPUT_PINS;
+    INTCON2bits.RBPU = 0; // Enable pull-ups on PORTB
     ADCON1 |= 0x0F; // Disable ADC function on PORTB pins (use for digital input)
+    
+    // Port C
     // RC2 (yellow LED on board), RC3 (red LED on board)
-    TRISC &= ~(0x02 | 0x04);
+    #define SQ_YELLOW_LED_PIN 0x02
+    #define SQ_RED_LED_PIN 0x04
+    TRISC &= ~(SQ_YELLOW_LED_PIN | SQ_RED_LED_PIN);
+    
+    // Port D
     // RD0: shift register data feed
     // RD1: shift register clock
     // RD2: shift register latch clock
     // RD3: shift register output enable
     // RD4: shift register reset
-    // RD5: red LED on illuminated pushbutton
-    TRISD &= ~(0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20);
-    //TRISE &= ~0x01;
-    TRISE = 0;
+    // RD5: red LED (inside illuminated pushbutton)
+    #define RED_IPB_LED_PIN 0x20
+    #define PORTD_OUTPUT_PINS (0x01 | 0x02 | 0x04 | 0x08 | 0x10 | RED_IPB_LED_PIN)
+    TRISD &= ~PORTD_OUTPUT_PINS;
+    
+    // Port E
+    // RE0: (not connected)
+    // RE1: on-board LED
+    // RE2: on-board button (w/ external pull-up to +5V)
+    #define BUILTIN_RED_LED_PIN 0x02
+    TRISE &= ~BUILTIN_RED_LED_PIN;
+}
+
+#pragma config OSC = HSPLL // || HS || XT
+#pragma config WDT = OFF
+void main(void) {
+    uint24_t count = 0;
+    init_gpio();
 
     sr_output_enable(0);
     sr_reset();
@@ -111,42 +142,45 @@ void main(void) {
        
     unsigned char state = 0x00;
     while (1) {
-        state ^= 0xFF;
-        // Flash internal yellow/red LEDs
-        if (state) {
-            PORTC |= 0x02;
-            PORTC &= ~0x04;
-            //sr_output_enable(0);
+        // Flash red LED (inside IPB)
+        //PORTD ^= INTERNAL_RED_LED_PIN;
+
+        // If blue/green buttons pressed, light up red/yellow LEDs
+        if (BLUE_PRESSED) {
+          PORTC |= SQ_RED_LED_PIN;
         } else {
-            PORTC &= ~0x02;
-            PORTC |= 0x04;
-            //sr_output_enable(1);
+          PORTC &= ~SQ_RED_LED_PIN;
         }
-        //PORTA = state;
-        //PORTB = 0x0F;
-        PORTD ^= 0x20;
-        //PORTE |= 0x01;
-        PORTE = state;
+        if (GREEN_PRESSED) {
+          PORTC |= SQ_YELLOW_LED_PIN;
+        } else {
+          PORTC &= ~SQ_YELLOW_LED_PIN;
+        }
+        
+        // If key is on, light up internal LED        
+        if (KEY_ON) {
+          PORTE |= BUILTIN_RED_LED_PIN;
+        } else {
+          PORTE &= ~BUILTIN_RED_LED_PIN;
+        }
+
+        // Blink internal/built-in LED each time around
+        //PORTE ^= BUILTIN_RED_LED_PIN;
         delay();
         //dumb_delay(10000);
 
         //PORTB = 0x00;
         //PORTE &= ~0x01;
         //delay();
-        count = PORTB; // DEBUG: show input pins on LEDs
+        //count = PORTB; // DEBUG: show input pins on LEDs
         sr_output_enable(0);
         sr_write(count);
         sr_output_enable(1);
 
-        // Count up when key is turned
-        //if (PORTB & 0x10 == 0) {
-        //}
-        /*
         count++;
         if (count > 0x1FFFF) {
           count = 0;
         }
-        */
     }
 }
 
