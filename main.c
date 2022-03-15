@@ -7,18 +7,16 @@
 #include <stdint.h>
 #include "p18cxxx.h"
 
-void delay();
-
-void delay() {
-    unsigned long counter = 0;
-    for (counter = 0; counter < 120*1000UL; counter++) {
-        NOP();
-    }
-}
+struct buttons {
+    unsigned int red:1;
+    unsigned int green:1;
+    unsigned int blue:1;
+    unsigned int key:1;
+};
 
 static inline
 void dumb_delay(unsigned long limit) {
-    for (unsigned long i=0; i<limit; i++) {
+    for (unsigned long i=0; i < limit; i++) {
         NOP();
     }
 }
@@ -38,7 +36,6 @@ void sr_output_enable(char enable) {
         PORTD |= 0x08;
     }
 }
-
 
 static inline
 void sr_data(char bit) {
@@ -69,7 +66,7 @@ void sr_latch_clock() {
 
 #define SR_LENGTH (17)
 void sr_write(unsigned long bits) {
-    for (int i=SR_LENGTH; i > 0; i--) {
+    for (int i = SR_LENGTH - 1; i >= 0; i--) {
         sr_data((bits >> i) & 1);
         sr_data_clock();
         //sr_latch_clock();
@@ -88,6 +85,14 @@ void sr_write(unsigned long bits) {
 #define BLUE_PRESSED ((PORTB & BLUE_BUTTON_BIT) == 0)
 #define KEY_ON ((PORTB & KEY_SWITCH_BIT) == 0)
 
+// PORTC
+#define SQ_YELLOW_LED_PIN 0x02
+#define SQ_RED_LED_PIN 0x04
+
+#define RED_IPB_LED_PIN 0x20
+#define PORTD_OUTPUT_PINS (0x01 | 0x02 | 0x04 | 0x08 | 0x10 | RED_IPB_LED_PIN)
+
+#define BUILTIN_RED_LED_PIN 0x02 // PORTE
 void init_gpio(void) {
     // TRISx = Tri-state / data direction for port x pins: 0 = output, 1 = input (default)
     
@@ -104,8 +109,6 @@ void init_gpio(void) {
     
     // Port C
     // RC2 (yellow LED on board), RC3 (red LED on board)
-    #define SQ_YELLOW_LED_PIN 0x02
-    #define SQ_RED_LED_PIN 0x04
     TRISC &= ~(SQ_YELLOW_LED_PIN | SQ_RED_LED_PIN);
     
     // Port D
@@ -115,72 +118,111 @@ void init_gpio(void) {
     // RD3: shift register output enable
     // RD4: shift register reset
     // RD5: red LED (inside illuminated pushbutton)
-    #define RED_IPB_LED_PIN 0x20
-    #define PORTD_OUTPUT_PINS (0x01 | 0x02 | 0x04 | 0x08 | 0x10 | RED_IPB_LED_PIN)
     TRISD &= ~PORTD_OUTPUT_PINS;
     
     // Port E
     // RE0: (not connected)
     // RE1: on-board LED
     // RE2: on-board button (w/ external pull-up to +5V)
-    #define BUILTIN_RED_LED_PIN 0x02
     TRISE &= ~BUILTIN_RED_LED_PIN;
+}
+
+// If blue buttons pressed, light up square red LED
+// If green button pressed, light up square yellow LED
+// If key is on, light up internal (round red) LED
+void debug_inputs_with_internal_leds() {
+    if (BLUE_PRESSED) {
+        PORTC |= SQ_RED_LED_PIN;
+    } else {
+        PORTC &= ~SQ_RED_LED_PIN;
+    }
+    if (GREEN_PRESSED) {
+        PORTC |= SQ_YELLOW_LED_PIN;
+    } else {
+        PORTC &= ~SQ_YELLOW_LED_PIN;
+    }
+
+    if (KEY_ON) {
+        PORTE |= BUILTIN_RED_LED_PIN;
+    } else {
+        PORTE &= ~BUILTIN_RED_LED_PIN;
+    }
+}
+
+void init_shift_register() {
+    sr_output_enable(0);
+    sr_reset();
+    sr_write(0);
+    sr_output_enable(1);
+}
+
+void led_test() {
+    for (int i=0; i < SR_LENGTH; i++) {
+        sr_output_enable(0);
+        sr_write(1 << i);
+        sr_output_enable(1);
+        dumb_delay(50*1000UL);
+    }
+    sr_output_enable(0);
+    sr_write(0);
+    sr_output_enable(1);
+    dumb_delay(50*1000UL);
+
+    PORTD |= RED_IPB_LED_PIN;
+    dumb_delay(50*1000UL);
+
+    PORTD &= ~RED_IPB_LED_PIN;
+}
+
+void run_main_game(struct buttons buttons, uint24_t *count) {
+    if (buttons.green) {
+        if (buttons.key) {
+            *count >>= 1; // shift LEDs away from center
+        } else {
+            *count <<= 1; // shift LEDs toward center
+        }
+    }
+    if (buttons.blue) {
+        *count ^= 0x0001; // toggle blue LED (outermost)
+    }
+    if (buttons.red) {
+        *count ^= 0x20000; // toggle red-IBP LED (center)
+    }
+
+    sr_output_enable(0);
+    sr_write(*count);
+    sr_output_enable(1);
+    // Treat red LED (inside IPB) as 18th bit
+    if ((*count & 0x20000) == 0) {
+        PORTD &= ~RED_IPB_LED_PIN;
+    } else {
+        PORTD |= RED_IPB_LED_PIN;
+    }
+}
+
+void read_buttons(struct buttons *buttons) {
+    buttons->red = RED_PRESSED ? 1 : 0;
+    buttons->green = GREEN_PRESSED ? 1 : 0;
+    buttons->blue = BLUE_PRESSED ? 1 : 0;
+    buttons->key = KEY_ON ? 1 : 0;
 }
 
 #pragma config OSC = HSPLL // || HS || XT
 #pragma config WDT = OFF
 void main(void) {
     uint24_t count = 0;
-    init_gpio();
+    struct buttons buttons = { 0 };
 
-    sr_output_enable(0);
-    sr_reset();
-    //sr_write(0x01A6);
-    sr_write(0);
-    dumb_delay(100UL);
-    sr_output_enable(1);
-       
+    init_gpio();
+    //init_shift_register();
+    led_test();
+
     unsigned char state = 0x00;
     while (1) {
-        // Flash red LED (inside IPB)
-        //PORTD ^= INTERNAL_RED_LED_PIN;
-
-        // If blue/green buttons pressed, light up red/yellow LEDs
-        if (BLUE_PRESSED) {
-          PORTC |= SQ_RED_LED_PIN;
-        } else {
-          PORTC &= ~SQ_RED_LED_PIN;
-        }
-        if (GREEN_PRESSED) {
-          PORTC |= SQ_YELLOW_LED_PIN;
-        } else {
-          PORTC &= ~SQ_YELLOW_LED_PIN;
-        }
-        
-        // If key is on, light up internal LED        
-        if (KEY_ON) {
-          PORTE |= BUILTIN_RED_LED_PIN;
-        } else {
-          PORTE &= ~BUILTIN_RED_LED_PIN;
-        }
-
-        // Blink internal/built-in LED each time around
-        //PORTE ^= BUILTIN_RED_LED_PIN;
-        delay();
-        //dumb_delay(10000);
-
-        //PORTB = 0x00;
-        //PORTE &= ~0x01;
-        //delay();
-        //count = PORTB; // DEBUG: show input pins on LEDs
-        sr_output_enable(0);
-        sr_write(count);
-        sr_output_enable(1);
-
-        count++;
-        if (count > 0x1FFFF) {
-          count = 0;
-        }
+        debug_inputs_with_internal_leds();
+        read_buttons(&buttons);
+        run_main_game(buttons, &count);
+        dumb_delay(100*1000UL); // TODO: replace with button debounce logic
     }
 }
 
