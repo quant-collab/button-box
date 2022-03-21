@@ -207,6 +207,35 @@ void read_buttons(struct buttons *buttons) {
     buttons->key = KEY_ON ? 1 : 0;
 }
 
+void wait_and_watch_buttons(struct buttons *buttons, unsigned long delay_cycles) {
+    // * loop until we've gone around `delay_cycles` times
+    // * each time around check the buttons and increment to either a "pressed" or "not pressed" counter
+    // * when done, see which counter for each button is higher and consider that one to be the "answer"
+    struct buttons reading;
+    unsigned long threshold = delay_cycles / 2;
+    uint32_t red = 0, blue = 0, green = 0, key = 0;
+    while (delay_cycles > 0) {
+        read_buttons(&reading);
+        if (reading.red) {
+            red++;
+        }
+        if (reading.blue) {
+            blue++;
+        }
+        if (reading.green) {
+            green++;
+        }
+        if (reading.key) {
+            key++;
+        }
+        delay_cycles--;
+    }
+    buttons->red = red >= threshold ? 1 : 0;
+    buttons->green = green >= threshold ? 1 : 0;
+    buttons->blue = blue >= threshold ? 1 : 0;
+    buttons->key = key >= threshold ? 1 : 0;
+}
+
 #pragma config OSC = HSPLL // || HS || XT
 #pragma config WDT = OFF
 void main(void) {
@@ -220,9 +249,8 @@ void main(void) {
     unsigned char state = 0x00;
     while (1) {
         debug_inputs_with_internal_leds();
-        read_buttons(&buttons);
+        wait_and_watch_buttons(&buttons, 20*1000UL);
         run_main_game(buttons, &count);
-        dumb_delay(100*1000UL); // TODO: replace with button debounce logic
     }
 }
 
