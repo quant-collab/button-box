@@ -7,11 +7,37 @@
 #include <stdint.h>
 #include "p18cxxx.h"
 
+#define DEBOUNCE_COUNTDOWN 64
+struct button {
+    uint8_t debounce;
+    unsigned int current:1;
+    unsigned int last:1;
+    unsigned int rising_edge:1; // keydown
+    unsigned int falling_edge:1; // keyup
+};
+
+static inline
+void debounce_button(struct button *b) {
+    if (b->current != b->last) {
+        b->debounce = DEBOUNCE_COUNTDOWN;
+        b->last = b->current;
+    } else if (b->debounce > 0) {
+        b->debounce--;
+        if (b->debounce == 0) {
+            if (b->current) {
+                b->rising_edge = 1;
+            } else {
+                b->falling_edge = 1;
+            }
+        }
+    } // No operation once fully debounced (so as to avoid retriggering edge flags)
+}
+
 struct buttons {
-    unsigned int red:1;
-    unsigned int green:1;
-    unsigned int blue:1;
-    unsigned int key:1;
+    struct button red;
+    struct button green;
+    struct button blue;
+    struct button key;
 };
 
 static inline
@@ -174,18 +200,21 @@ void led_test() {
     PORTD &= ~RED_IPB_LED_PIN;
 }
 
-void run_main_game(struct buttons buttons, uint24_t *count) {
-    if (buttons.green) {
-        if (buttons.key) {
+void run_main_game(struct buttons *buttons, uint24_t *count) {
+    if (buttons->green.rising_edge == 1) {
+        buttons->green.rising_edge = 0;
+        if (buttons->key.last) {
             *count >>= 1; // shift LEDs away from center
         } else {
             *count <<= 1; // shift LEDs toward center
         }
     }
-    if (buttons.blue) {
+    if (buttons->blue.rising_edge == 1) {
+        buttons->blue.rising_edge = 0;
         *count ^= 0x0001; // toggle blue LED (outermost)
     }
-    if (buttons.red) {
+    if (buttons->red.rising_edge == 1) {
+        buttons->red.rising_edge = 0;
         *count ^= 0x20000; // toggle red-IBP LED (center)
     }
 
@@ -200,57 +229,38 @@ void run_main_game(struct buttons buttons, uint24_t *count) {
     }
 }
 
+
+static inline
 void read_buttons(struct buttons *buttons) {
-    buttons->red = RED_PRESSED ? 1 : 0;
-    buttons->green = GREEN_PRESSED ? 1 : 0;
-    buttons->blue = BLUE_PRESSED ? 1 : 0;
-    buttons->key = KEY_ON ? 1 : 0;
+    buttons->red.current = RED_PRESSED ? 1 : 0;
+    buttons->green.current = GREEN_PRESSED ? 1 : 0;
+    buttons->blue.current = BLUE_PRESSED ? 1 : 0;
+    buttons->key.current = KEY_ON ? 1 : 0;
 }
 
-void wait_and_watch_buttons(struct buttons *buttons, unsigned long delay_cycles) {
-    // * loop until we've gone around `delay_cycles` times
-    // * each time around check the buttons and increment to either a "pressed" or "not pressed" counter
-    // * when done, see which counter for each button is higher and consider that one to be the "answer"
-    struct buttons reading;
-    unsigned long threshold = delay_cycles / 2;
-    uint32_t red = 0, blue = 0, green = 0, key = 0;
-    while (delay_cycles > 0) {
-        read_buttons(&reading);
-        if (reading.red) {
-            red++;
-        }
-        if (reading.blue) {
-            blue++;
-        }
-        if (reading.green) {
-            green++;
-        }
-        if (reading.key) {
-            key++;
-        }
-        delay_cycles--;
-    }
-    buttons->red = red >= threshold ? 1 : 0;
-    buttons->green = green >= threshold ? 1 : 0;
-    buttons->blue = blue >= threshold ? 1 : 0;
-    buttons->key = key >= threshold ? 1 : 0;
+static inline
+void debounce_buttons(struct buttons *buttons) {
+    debounce_button(&buttons->red);
+    debounce_button(&buttons->blue);
+    debounce_button(&buttons->green);
+    debounce_button(&buttons->key);
 }
 
 #pragma config OSC = HSPLL // || HS || XT
 #pragma config WDT = OFF
 void main(void) {
     uint24_t count = 0;
-    struct buttons buttons = { 0 };
+    struct buttons buttons = { 0 }; // TODO: initialize less sloppily
 
     init_gpio();
     //init_shift_register();
     led_test();
 
-    unsigned char state = 0x00;
     while (1) {
+        read_buttons(&buttons);
         debug_inputs_with_internal_leds();
-        wait_and_watch_buttons(&buttons, 20*1000UL);
-        run_main_game(buttons, &count);
+        debounce_buttons(&buttons);
+        run_main_game(&buttons, &count);
     }
 }
 
