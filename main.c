@@ -8,8 +8,10 @@
 #include "p18cxxx.h"
 
 #define DEBOUNCE_COUNTDOWN 64
+#define HOLD_COUNTDOWN 255
 struct button {
     uint8_t debounce;
+    uint8_t hold;
     unsigned int current:1;
     unsigned int last:1;
     unsigned int rising_edge:1; // keydown
@@ -18,19 +20,31 @@ struct button {
 
 static inline
 void debounce_button(struct button *b) {
+    char trigger = 0;
     if (b->current != b->last) {
         b->debounce = DEBOUNCE_COUNTDOWN;
         b->last = b->current;
     } else if (b->debounce > 0) {
         b->debounce--;
         if (b->debounce == 0) {
-            if (b->current) {
-                b->rising_edge = 1;
-            } else {
-                b->falling_edge = 1;
-            }
+            trigger = 1;
         }
-    } // No operation once fully debounced (so as to avoid retriggering edge flags)
+    } else {
+      if (b->hold > 0) {
+        b->hold--;
+        if (b->hold == 0) {
+            trigger = 1;
+        }
+      }
+    }
+    if (trigger) {
+        if (b->current) {
+            b->rising_edge = 1;
+        } else {
+            b->falling_edge = 1;
+        }
+        b->hold = HOLD_COUNTDOWN;
+    }
 }
 
 struct buttons {
