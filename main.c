@@ -7,6 +7,30 @@
 #include <stdint.h>
 #include "p18cxxx.h"
 
+#define RED_BUTTON_BIT 0x01 // RB0 (red IPB)
+#define GREEN_BUTTON_BIT 0x02 // RB1 (green button)
+#define BLUE_BUTTON_BIT 0x04 // RB2 (blue button)
+#define KEY_SWITCH_BIT 0x10 // RB4 (key switch)
+#define PORTB_INPUT_PINS (RED_BUTTON_BIT | GREEN_BUTTON_BIT | BLUE_BUTTON_BIT | KEY_SWITCH_BIT)
+
+#define RED_PRESSED ((PORTB & RED_BUTTON_BIT) == 0)
+#define GREEN_PRESSED ((PORTB & GREEN_BUTTON_BIT) == 0)
+#define BLUE_PRESSED ((PORTB & BLUE_BUTTON_BIT) == 0)
+#define KEY_ON ((PORTB & KEY_SWITCH_BIT) == 0)
+
+// PORTC
+#define SQ_YELLOW_LED_PIN 0x02
+#define SQ_RED_LED_PIN 0x04
+
+#define RED_IPB_LED_PIN 0x20
+#define PORTD_OUTPUT_PINS (0x01 | 0x02 | 0x04 | 0x08 | 0x10 | RED_IPB_LED_PIN)
+
+#define BUILTIN_RED_LED_PIN 0x02 // PORTE
+
+// This turns out to be about a minute
+#define IDLE_COUNTDOWN 72000
+static uint32_t idle_time = IDLE_COUNTDOWN;
+
 #define DEBOUNCE_COUNTDOWN 64
 #define HOLD_COUNTDOWN 255
 struct button {
@@ -54,8 +78,27 @@ struct buttons {
     struct button key;
 };
 
+
 static inline
-void dumb_delay(unsigned long limit) {
+void read_buttons(struct buttons *buttons) {
+    buttons->red.current = RED_PRESSED ? 1 : 0;
+    buttons->green.current = GREEN_PRESSED ? 1 : 0;
+    buttons->blue.current = BLUE_PRESSED ? 1 : 0;
+    buttons->key.current = KEY_ON ? 1 : 0;
+}
+
+
+static inline
+void debounce_buttons(struct buttons *buttons) {
+    debounce_button(&buttons->red);
+    debounce_button(&buttons->blue);
+    debounce_button(&buttons->green);
+    debounce_button(&buttons->key);
+}
+
+
+static inline
+void dumb_delay(uint32_t limit) {
     for (unsigned long i=0; i < limit; i++) {
         NOP();
     }
@@ -105,7 +148,7 @@ void sr_latch_clock() {
 }
 
 #define SR_LENGTH (17)
-void sr_write(unsigned long bits) {
+void sr_write(uint32_t bits) {
     for (int i = SR_LENGTH - 1; i >= 0; i--) {
         sr_data((bits >> i) & 1);
         sr_data_clock();
@@ -114,25 +157,6 @@ void sr_write(unsigned long bits) {
     sr_latch_clock();
 }
 
-#define RED_BUTTON_BIT 0x01 // RB0 (red IPB)
-#define GREEN_BUTTON_BIT 0x02 // RB1 (green button)
-#define BLUE_BUTTON_BIT 0x04 // RB2 (blue button)
-#define KEY_SWITCH_BIT 0x10 // RB4 (key switch)
-#define PORTB_INPUT_PINS (RED_BUTTON_BIT | GREEN_BUTTON_BIT | BLUE_BUTTON_BIT | KEY_SWITCH_BIT)
-
-#define RED_PRESSED ((PORTB & RED_BUTTON_BIT) == 0)
-#define GREEN_PRESSED ((PORTB & GREEN_BUTTON_BIT) == 0)
-#define BLUE_PRESSED ((PORTB & BLUE_BUTTON_BIT) == 0)
-#define KEY_ON ((PORTB & KEY_SWITCH_BIT) == 0)
-
-// PORTC
-#define SQ_YELLOW_LED_PIN 0x02
-#define SQ_RED_LED_PIN 0x04
-
-#define RED_IPB_LED_PIN 0x20
-#define PORTD_OUTPUT_PINS (0x01 | 0x02 | 0x04 | 0x08 | 0x10 | RED_IPB_LED_PIN)
-
-#define BUILTIN_RED_LED_PIN 0x02 // PORTE
 void init_gpio(void) {
     // TRISx = Tri-state / data direction for port x pins: 0 = output, 1 = input (default)
     
@@ -215,7 +239,9 @@ void led_test() {
 }
 
 void run_main_game(struct buttons *buttons, uint24_t *count) {
+    uint8_t is_active = 0;
     if (buttons->green.rising_edge == 1) {
+        is_active = 1;
         buttons->green.rising_edge = 0;
         if (buttons->key.last) {
             *count >>= 1; // shift LEDs away from center
@@ -224,10 +250,12 @@ void run_main_game(struct buttons *buttons, uint24_t *count) {
         }
     }
     if (buttons->blue.rising_edge == 1) {
+        is_active = 1;
         buttons->blue.rising_edge = 0;
         *count ^= 0x0001; // toggle blue LED (outermost)
     }
     if (buttons->red.rising_edge == 1) {
+        is_active = 1;
         buttons->red.rising_edge = 0;
         *count ^= 0x20000; // toggle red-IBP LED (center)
     }
@@ -241,26 +269,39 @@ void run_main_game(struct buttons *buttons, uint24_t *count) {
     } else {
         PORTD |= RED_IPB_LED_PIN;
     }
+
+    if (is_active) {
+        idle_time = IDLE_COUNTDOWN;
+    }
+}
+
+void power_down_if_idle() {
+    if (idle_time > 0) {
+        idle_time--;
+        if (idle_time == 0) {
+            // DEBUG: "going to sleep now!)
+            //sr_output_enable(0);
+            //sr_write(0xAAAAAAAA);
+            //sr_output_enable(1);
+            //dumb_delay(500UL*1000UL);
+
+            sr_output_enable(0);
+            asm("sleep");
+            sr_output_enable(1);
+            idle_time = IDLE_COUNTDOWN;
+
+            // DEBUG: "just woke up!)
+            //sr_output_enable(0);
+            //sr_write(0x55555555);
+            //sr_output_enable(1);
+            //dumb_delay(500UL*1000UL);
+        }
+    }
 }
 
 
-static inline
-void read_buttons(struct buttons *buttons) {
-    buttons->red.current = RED_PRESSED ? 1 : 0;
-    buttons->green.current = GREEN_PRESSED ? 1 : 0;
-    buttons->blue.current = BLUE_PRESSED ? 1 : 0;
-    buttons->key.current = KEY_ON ? 1 : 0;
-}
 
-static inline
-void debounce_buttons(struct buttons *buttons) {
-    debounce_button(&buttons->red);
-    debounce_button(&buttons->blue);
-    debounce_button(&buttons->green);
-    debounce_button(&buttons->key);
-}
-
-#pragma config OSC = HSPLL // || HS || XT
+#pragma config OSC = HSPLL // | HS | XT | INTIO1 | INTIO2 ... (see p. 20 of datasheet)
 #pragma config WDT = OFF
 void main(void) {
     uint24_t count = 0;
@@ -269,13 +310,48 @@ void main(void) {
     init_gpio();
     //init_shift_register();
     led_test();
+    OSCCONbits.IDLEN = 0; // Device enters sleep mode on SLEEP instruction (vs. idle)
+    //INTCONbits.RBIE = 1; // Interrupt on PORTB pin level changes (button press/release)
+    INTCON3bits.INT1IE = 1; // Interrupt on INT1 pin (RB1 = green button)
+    INTCON3bits.INT2IE = 1; // Interrupt on INT2 pin (RB2 = blue button)
+    INTCONbits.GIE = 1;
 
     while (1) {
         read_buttons(&buttons);
         debug_inputs_with_internal_leds();
         debounce_buttons(&buttons);
         run_main_game(&buttons, &count);
+        power_down_if_idle();
     }
 }
 
+
+void __interrupt() GlobalInterruptHandler(void) 
+{
+    static volatile uint8_t dummy;
+    if(INTCONbits.RBIF == 1)
+    {
+        // PORTB change...
+        dummy = PORTB;
+        INTCONbits.RBIF = 0;
+        //idle_time = IDLE_COUNTDOWN;
+        //sr_output_enable(0);
+        //sr_write(0xFFFFFFFF);
+        //sr_output_enable(1);
+    }
+    if(INTCON3bits.INT1IF == 1)
+    {
+        // INT1 (RB1) interrupt
+        INTCON3bits.INT1IF = 0;
+        //idle_time = IDLE_COUNTDOWN;
+        //sr_output_enable(1);
+    }
+    if(INTCON3bits.INT2IF == 1)
+    {
+        // INT2 (RB2) interrupt
+        INTCON3bits.INT2IF = 0;
+        //idle_time = IDLE_COUNTDOWN;
+        //sr_output_enable(1);
+    }
+}
 
