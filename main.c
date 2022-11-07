@@ -285,7 +285,13 @@ void power_down_if_idle() {
             //sr_output_enable(1);
             //dumb_delay(500UL*1000UL);
 
+            // Turn off main LEDs bye disabling output on shift register & turning off IPB
             sr_output_enable(0);
+            PORTD &= ~RED_IPB_LED_PIN;
+            // Turn off "debug LEDs"
+            PORTC &= ~SQ_RED_LED_PIN;
+            PORTC &= ~SQ_YELLOW_LED_PIN;
+            PORTE &= ~BUILTIN_RED_LED_PIN;
             asm("sleep");
             sr_output_enable(1);
             idle_time = IDLE_COUNTDOWN;
